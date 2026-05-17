@@ -1,8 +1,8 @@
 # Propuesta de Diseño Arquitectónico — SaludEje
 
-**Autor:** Samuel Tabares
+**Autores:** Samuel Tabares y Susana Eguis
 **Fecha:** Mayo 2026
-**Versión:** 1.0 (en construcción)
+**Versión:** 1.0 (completada)
 
 ---
 
