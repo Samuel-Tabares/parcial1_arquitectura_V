@@ -16,25 +16,18 @@ Como equipo de arquitectura de software, su tarea es proponer el diseño arquite
 SaludEje. El sistema debe cubrir cinco dominios de negocio:
 
     1. Historia Clínica Electrónica (HCE): Registro, consulta y actualización del historial médico
-    completo de los pacientes. Debe cumplir la normativa colombiana de datos sensibles. Es el dominio
-    más crítico del sistema: un error aquí puede costar vidas.
+    completo de los pacientes. Debe cumplir la normativa colombiana de datos sensibles. Es el dominio más crítico del sistema: un error aquí puede costar vidas.
 
     2. Agendamiento y consultas: Citas médicas con especialistas, atención de urgencias y
-    telemedicina. Presenta picos de demanda extremos (lunes entre 6am y 8am concentra el 40% de las
-    agendas de la semana) y períodos de baja carga. La indisponibilidad en horas pico tiene impacto
-    directo en la atención de pacientes.
+    telemedicina. Presenta picos de demanda extremos (lunes entre 6am y 8am concentra el 40% de las agendas de la semana) y períodos de baja carga. La indisponibilidad en horas pico tiene impacto directo en la atención de pacientes.
 
-    3. Laboratorio y diagnóstico: Solicitud de exámenes clínicos, carga de resultados por laboratorios
-    externos y notificación inmediata al médico tratante. Integra múltiples laboratorios privados y públicos
-    de la región con protocolos y formatos de datos heterogéneos.
+    3. Laboratorio y diagnóstico: Solicitud de exámenes clínicos, carga de resultados por laboratorios externos y notificación inmediata al médico tratante. Integra múltiples laboratorios privados y públicos de la región con protocolos y formatos de datos heterogéneos.
 
     4. Farmacia hospitalaria: Dispensación de medicamentos, control de inventario de fármacos,
-    alertas automáticas de stock mínimo y productos próximos a vencer. Cada hospital tiene su propio
-    inventario pero deben poder consultarse entre sí para traslados de urgencia.
+    alertas automáticas de stock mínimo y productos próximos a vencer. Cada hospital tiene su propio inventario pero deben poder consultarse entre sí para traslados de urgencia.
 
     5. Facturación y glosas: Generación de cuentas médicas para EPS como Sura y Nueva EPS,
-    radicación electrónica ante las aseguradoras y seguimiento del estado de las glosas. Debe integrarse
-    con los sistemas de información de cada EPS, que tienen APIs y formatos distintos.
+    radicación electrónica ante las aseguradoras y seguimiento del estado de las glosas. Debe integrarse con los sistemas de información de cada EPS, que tienen APIs y formatos distintos.
 
 
 Los actores externos del sistema son: pacientes, médicos, enfermeras, laboratoristas, farmacéuticos,
