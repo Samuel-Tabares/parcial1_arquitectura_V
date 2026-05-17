@@ -104,11 +104,11 @@ Diseño arquitectónico completo de **SaludEje**, plataforma digital para integr
 >
 > **Clave:** Las opciones descartadas deben ser técnicamente válidas. Un ADR que descarta opciones absurdas no demuestra análisis real.
 
-- [ ] **ADR-001:** Elección del modelo arquitectónico principal (microservicios por dominio)
-- [ ] **ADR-002:** Estrategia de integración con HIS existentes (API Gateway + adaptadores por hospital)
-- [ ] **ADR-003:** Modelo de datos para HCE (base de datos propia por dominio vs compartida)
-- [ ] **ADR-004:** Estrategia de nube con soberanía del dato (AWS/Azure Colombia + on-premise para datos clínicos)
-- [ ] **ADR-005:** Mecanismo de comunicación entre dominios (eventos asincrónicos con broker vs REST síncrono)
+- [x] **ADR-001:** Elección del modelo arquitectónico principal (Monolito Modular vs Microservicios vs N-tier)
+- [x] **ADR-002:** Estrategia de integración con HIS existentes (adaptadores independientes por región vs ESB vs ETL)
+- [x] **ADR-003:** Modelo de datos para HCE (append-only con schema propio y puerto de auditoría obligatorio)
+- [x] **ADR-004:** Infraestructura híbrida con soberanía del dato (nube colombiana + on-premise para datos clínicos)
+- [x] **ADR-005:** Mecanismo de comunicación entre módulos (bus de eventos interno con interfaz abstracta vs REST síncrono vs tabla compartida)
 
 ---
 
@@ -120,9 +120,9 @@ Diseño arquitectónico completo de **SaludEje**, plataforma digital para integr
 >
 > **Cómo hacerlo:** Usar el modelo C4 simplificado — nivel de contexto (sistema + actores externos) y nivel de contenedor (componentes internos principales). Cada elemento del diagrama debe aparecer mencionado en algún ADR o sección de modelos. Usar Mermaid para incluirlo directamente en el MD.
 
-- [ ] Identificar los componentes: API Gateway, cada microservicio/dominio, event broker, bases de datos por dominio, adaptadores HIS, conectores EPS, capa de autenticación
-- [ ] Definir flujos principales: paciente agenda cita → médico accede HCE → solicita examen → laboratorio carga resultado → médico notificado → se genera cuenta a EPS
-- [ ] Crear el diagrama en formato Mermaid para incluir en el documento final
+- [x] Identificar los componentes: API Gateway, Auth Service, 5 módulos del monolito, bus de eventos interno, 5 schemas de BD separados, adaptadores HIS por región, conectores EPS y MINSALUD
+- [x] Definir flujos principales: actores → API Gateway → Auth → módulos → bus de eventos → notificaciones / facturación
+- [x] Crear el diagrama en formato Mermaid con separación visual entre infraestructura colombiana y nube general
 
 **Componentes clave a mostrar:**
 ```
@@ -148,13 +148,13 @@ Sistemas externos: HIS hospitales, APIs EPS, MINSALUD (RIPS), Laboratorios exter
 >
 > **Cómo hacerlo:** Al final, hacer una revisión cruzada: cada driver debe aparecer en al menos un ADR. Cada ADR debe verse reflejado en el diagrama. Cada atributo de calidad debe tener una táctica concreta en el diseño que lo soporte.
 
-- [ ] Introducción y contexto del sistema
-- [ ] Drivers arquitectónicos (funcionales + restricciones)
-- [ ] Atributos de calidad y escenarios (con trade-offs)
-- [ ] ADRs (ADR-001 al ADR-005)
-- [ ] Modelos arquitectónicos y justificación por dominio
-- [ ] Diagrama de arquitectura de alto nivel
-- [ ] Revisión cruzada de coherencia — drivers → ADRs → modelos → diagrama cuentan la misma historia
+- [x] Introducción y contexto del sistema
+- [x] Drivers arquitectónicos (funcionales + restricciones)
+- [x] Atributos de calidad y escenarios (con trade-offs)
+- [x] ADRs (ADR-001 al ADR-005)
+- [x] Modelos arquitectónicos y justificación por dominio
+- [x] Diagrama de arquitectura de alto nivel
+- [x] Revisión cruzada de coherencia — todos los drivers (DF1-DF5, DR1-DR4) referenciados en al menos un ADR; todos los atributos de calidad (AQ1-AQ4) con táctica visible en diseño o ADR; diagrama consistente con todos los ADRs
 
 ---
 

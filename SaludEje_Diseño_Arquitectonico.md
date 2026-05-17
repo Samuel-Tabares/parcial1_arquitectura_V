@@ -256,7 +256,199 @@ Los cuatro atributos no son independientes. Optimizar uno tiene consecuencias me
 
 ## C. Architecture Decision Records (ADRs)
 
-> *[En desarrollo — Paso 4]*
+Los cinco ADRs que siguen registran las decisiones con mayor impacto estructural en SaludEje. Cada uno incluye el contexto específico del proyecto que forzó la decisión, las alternativas técnicamente válidas evaluadas con sus pros y contras concretos, y las consecuencias — tanto las deseables como las que se asumen explícitamente como deuda técnica. Las opciones descartadas son viables en otros contextos; su descarte se justifica contra los drivers y restricciones particulares de este sistema.
+
+---
+
+### ADR-001: Adopción de Monolito Modular como estructura global del sistema
+
+**Estado:** Aceptado
+
+**Contexto:**
+SaludEje debe elegir un modelo arquitectónico que organice cinco dominios funcionalmente distintos bajo un presupuesto de $850M COP, con un equipo de 12 ingenieros sin experiencia previa en el dominio de salud colombiano y con 12 meses disponibles para el MVP. Las fuerzas en juego son tres: la necesidad de fronteras de dominio claras para evitar acoplamiento accidental entre HCE, Agendamiento, Laboratorio, Farmacia y Facturación; la complejidad operacional que el equipo puede absorber mientras aprende la normativa de salud colombiana simultáneamente; y el costo real de arranque de una arquitectura distribuida antes de escribir la primera línea de funcionalidad de dominio (DR3).
+
+**Opciones consideradas:**
+
+*Opción A — Microservicios por dominio*
+
+- **Pros:** Escalado granular por servicio independiente; despliegue autónomo por dominio; tecnología heterogénea por equipo; alineación natural con DDD.
+- **Contras para este contexto:** La consistencia distribuida en la HCE exige saga patterns o two-phase commit, ambos con ventanas de inconsistencia inaceptables para decisiones clínicas en tiempo real. El overhead operacional previo al MVP (service mesh, distributed tracing, saga orchestration, pipelines CI/CD por servicio) consume entre 2 y 4 meses de capacidad de ingeniería antes de la primera funcionalidad de dominio. Con 12 meses para el MVP, ese costo de arranque es inviable. El equipo debe aprender el dominio médico y operar infraestructura distribuida al mismo tiempo — doble carga cognitiva en el peor momento posible.
+
+*Opción B — Arquitectura N-tier monolítica con base de datos compartida*
+
+- **Pros:** Familiar para equipos con poca experiencia en estilos avanzados; ACID nativo; arranque rápido sin overhead de fronteras explícitas.
+- **Contras para este contexto:** La base de datos compartida entre todos los dominios viola el principio de aislamiento de módulos y dificulta el cumplimiento de la Resolución 2654: si HCE comparte tablas con Farmacia, aislar correctamente el log de auditoría de accesos clínicos se convierte en una convención frágil, no en una propiedad estructural del código. El acoplamiento accidental crece con el tiempo: una migración de esquema en Farmacia puede romper el módulo de HCE. Escalar el módulo de Agendamiento para el pico del lunes implica escalar toda la capa de negocio completa.
+
+*Opción C — Monolito Modular con fronteras de dominio explícitas (elegida)*
+
+- **Pros:** Módulos con schemas de BD propios e interfaces de comunicación explícitas; transacciones ACID nativas por módulo sin saga patterns; un solo artefacto de deployment y pipeline de CI/CD; es el punto de partida del patrón Strangler Fig — en fase 2 se puede extraer el módulo más estresado sin reescribir el resto.
+- **Contras para este contexto:** Escalado del monolito completo cuando solo un módulo tiene alta demanda; ciclos de deployment acoplados entre todos los módulos; la extracción de un servicio en fase 2 requiere inversión adicional de refactoring.
+
+**Decisión:** Se adopta el Monolito Modular. La razón principal es que elimina el riesgo de inconsistencia distribuida en la HCE — donde es clínicamente inaceptable — sin renunciar a la separación de dominios, y mantiene la complejidad operacional dentro de lo que el equipo puede absorber en el tiempo disponible (DR3).
+
+**Consecuencias:**
+
+- *Se gana:* Consistencia ACID en HCE sin saga patterns; un único proceso que depurar y desplegar; complejidad operacional alineada con la capacidad del equipo durante la curva de aprendizaje del dominio.
+- *Se sacrifica:* Escalado granular por módulo — si Farmacia necesita más capacidad, se escala el monolito completo; independencia de ciclos de deployment entre dominios.
+- *Deuda técnica asumida:* El módulo de Agendamiento es el candidato natural para extracción como microservicio en fase 2 (Strangler Fig). Ese proceso tiene un costo de refactoring que se acepta conscientemente ahora. El bus de eventos interno (ADR-005) debe diseñarse desde ahora con una interfaz compatible con un broker externo para que esa extracción no reescriba los módulos consumidores.
+- *ADRs afectados:* ADR-005 (la interfaz del bus debe anticipar la extracción futura); ADR-004 (el monolito único simplifica la arquitectura híbrida — hay un solo artefacto de cómputo para replicar, no múltiples servicios con configuraciones de red independientes).
+- *Drivers respondidos:* DR3 (equipo sin experiencia + presupuesto limitado), DF2 (picos de agendamiento manejables con CQRS interno + auto-scaling del monolito).
+- *Atributos de calidad respondidos:* AQ1 (disponibilidad: ACID en HCE sin inconsistencia distribuida), AQ2 (rendimiento: CQRS interno en Agendamiento sin overhead de comunicación entre servicios).
+
+---
+
+### ADR-002: Integración con HIS existentes mediante adaptadores independientes por región
+
+**Estado:** Aceptado
+
+**Contexto:**
+Cada hospital del Eje Cafetero opera con su propio Sistema de Información Hospitalario (HIS), con modelos de datos propietarios, protocolos de acceso distintos y bases de datos que no pueden modificarse en fase 1 (DR2). SaludEje necesita acceder a los datos históricos del paciente que residen en esos HIS para satisfacer DF1 (acceso cross-hospital a la HCE en tiempo real). Los HIS son heterogéneos entre sí: el hospital de Manizales puede usar un sistema distinto al de Armenia, con esquemas y APIs incompatibles. La integración debe ser extensible — añadir un nuevo hospital en fase 2 no debe requerir modificar la lógica del módulo HCE (DF4). La restricción DR4 añade un requisito adicional: la falla de la integración con un hospital no puede interrumpir la atención en los demás.
+
+**Opciones consideradas:**
+
+*Opción A — Enterprise Service Bus (ESB) comercial: MuleSoft, WSO2 o IBM Integration Bus*
+
+- **Pros:** Plataforma madura con conectores preconstruidos para múltiples protocolos y formatos; orquestación visual de flujos de integración; soporte garantizado por el proveedor.
+- **Contras para este contexto:** El licenciamiento de MuleSoft Enterprise puede superar el 20-30% del presupuesto total del proyecto ($170M-$255M COP anuales). El equipo necesita capacitación específica en la plataforma ESB antes de poder integrar el primer HIS. Introduce vendor lock-in crítico: si el ESB falla, todos los hospitales pierden conectividad simultáneamente, violando DR4. La arquitectura centralizada del ESB contradice la estrategia de rollout incremental por hospital.
+
+*Opción B — ETL batch con data warehouse centralizado*
+
+- **Pros:** Centraliza los datos históricos en un modelo unificado; consultas analíticas eficientes; desacoplamiento operacional de los HIS para lecturas de SaludEje.
+- **Contras para este contexto:** Los procesos ETL son batch — no ofrecen la sincronización en tiempo real que exige DF1. Un médico de urgencias que necesita el historial de alergias de un paciente inconsciente no puede esperar el siguiente ciclo de carga. La importación masiva de datos clínicos sin el marco normativo de la Resolución 2654 genera riesgos legales. El ETL no soporta escritura de vuelta al HIS, limitando la integración a solo lectura.
+
+*Opción C — Adaptadores independientes por hospital/región con interfaz común (elegida)*
+
+- **Pros:** Cada adaptador es un componente independiente — una falla del HIS de Caldas no interrumpe la integración con Risaralda ni con Quindío (DR4). Añadir un nuevo hospital es implementar un nuevo adaptador sin tocar el módulo HCE ni ningún otro módulo (DF4). Código open source controlado por el equipo, sin dependencia de proveedor. La sincronización puede ser en tiempo real o por polling programado según la capacidad del HIS subyacente.
+- **Contras para este contexto:** Cada adaptador debe construirse y mantenerse individualmente. Si un HIS cambia su API o esquema, el adaptador correspondiente debe actualizarse — trabajo de ingeniería continuo estimado en 2-3 semanas por adaptador.
+
+**Decisión:** Se implementa una capa de adaptadores independientes por hospital/región. Cada adaptador implementa la interfaz `IAdaptadorHIS` y es registrado en el módulo HCE sin que este conozca la implementación concreta del HIS subyacente.
+
+**Consecuencias:**
+
+- *Se gana:* Aislamiento de fallos por hospital; extensibilidad sin cambios al core del módulo HCE; rollout incremental posible — se integra un hospital a la vez sin afectar a los demás.
+- *Se sacrifica:* Esfuerzo de desarrollo y mantenimiento continuo de cada adaptador; sin un ESB centralizado, el monitoreo del estado de todas las integraciones es responsabilidad directa del equipo.
+- *Deuda técnica asumida:* En el MVP se implementan los tres adaptadores prioritarios (Caldas, Risaralda, Quindío). Es necesario construir un dashboard de monitoreo del estado de cada adaptador desde fase 1; sin él, los fallos silenciosos de sincronización pueden pasar inadvertidos hasta que un médico no encuentra datos del paciente en urgencias.
+- *ADRs afectados:* ADR-003 (el modelo append-only de HCE debe incluir metadatos de origen — de qué HIS proviene cada registro — para que las correcciones futuras puedan rastrear la fuente); ADR-005 (los adaptadores HIS emiten eventos al bus cuando sincronizan datos, lo que define parte del contrato de eventos del bus desde el inicio).
+- *Drivers respondidos:* DR2 (no reemplazar HIS), DR4 (continuidad operacional con aislamiento por hospital), DF1 (acceso cross-hospital en tiempo real), DF4 (integración heterogénea extensible).
+- *Atributos de calidad respondidos:* AQ4 (interoperabilidad: nuevos adaptadores sin modificar el core), AQ1 (disponibilidad: fallo de un HIS no se propaga al sistema global).
+
+---
+
+### ADR-003: Modelo de datos append-only con schema propio y puerto de auditoría obligatorio en HCE
+
+**Estado:** Aceptado
+
+**Contexto:**
+La Resolución 2654 de 2019 establece tres obligaciones con consecuencias directas en el modelo de datos de la HCE: los registros clínicos no pueden modificarse ni eliminarse — solo adicionarse (inmutabilidad); cada acceso debe quedar registrado con quién, cuándo y desde dónde (auditoría); y el sistema debe permitir exportar la historia en formato interoperable (portabilidad). La Ley 1581 exige adicionalmente que los datos clínicos sensibles estén aislados del resto del sistema. La pregunta concreta no es si cumplir la normativa — es obligatorio — sino cómo hacerlo de forma que el cumplimiento sea una propiedad estructural del diseño y no una convención que alguien puede omitir por error o por presión de tiempo.
+
+**Opciones consideradas:**
+
+*Opción A — Base de datos compartida con todos los módulos, soft deletes y tabla de auditoría separada*
+
+- **Pros:** Simplicidad inicial; un solo motor de base de datos para administrar; ACID entre módulos; curva de aprendizaje mínima para el equipo.
+- **Contras para este contexto:** Los soft deletes (columna `deleted_at`) son operaciones UPDATE sobre registros clínicos — violan explícitamente la Resolución 2654. Una tabla de auditoría separada puede desincronizarse si alguien ejecuta una operación directamente sobre la base de datos sin pasar por la aplicación (por ejemplo, un DBA que "corrige" un dato en producción). La base de datos compartida crea acoplamiento físico: una consulta mal escrita en Farmacia degrada el rendimiento de HCE y el log de auditoría no puede garantizarse arquitecturalmente.
+
+*Opción B — Event Sourcing puro con aggregate store*
+
+- **Pros:** El historial completo de cambios es el modelo de datos en sí; reconstrucción del estado en cualquier punto del tiempo; cumplimiento arquitectural perfecto de la inmutabilidad normativa; alineación natural con los eventos del bus (ADR-005).
+- **Contras para este contexto:** Event Sourcing requiere experiencia sólida en DDD, gestión de versiones de eventos, proyecciones, snapshots y esquemas evolutivos. Para un equipo que aprende simultáneamente el dominio médico y la normativa colombiana, implementar Event Sourcing correctamente en 12 meses es una apuesta de alto riesgo. El patrón ofrece beneficios que superan los requerimientos del MVP, y su implementación incorrecta genera problemas de consistencia más difíciles de depurar que el modelo relacional.
+
+*Opción C — Schema propio append-only con puerto de auditoría obligatorio en arquitectura hexagonal (elegida)*
+
+- **Pros:** El schema HCE es físicamente separado del resto del sistema — el aislamiento no depende de convenciones del equipo. Las escrituras de registros clínicos son solo INSERT; las correcciones se implementan como entradas nuevas con referencia al registro original. El puerto de auditoría en la arquitectura hexagonal es obligatorio por diseño: ningún caso de uso puede invocar la HCE sin que el puerto de auditoría sea ejecutado — es una garantía del compilador, no del equipo. El schema puede cifrarse en reposo (AES-256) de forma independiente al resto del sistema.
+- **Contras para este contexto:** Sin event sourcing, no hay reconstrucción automática del estado en un punto arbitrario del tiempo, limitando cierto tipo de auditorías forenses avanzadas. Las consultas del "estado actual" de la HCE son más complejas — requieren obtener el registro más reciente por concepto clínico. El volumen de datos crece más rápido que con un modelo mutable.
+
+**Decisión:** Se adopta schema propio append-only para la HCE con puerto de auditoría obligatorio integrado en la arquitectura hexagonal. Las correcciones a registros clínicos se implementan como entradas nuevas con referencia al registro original, nunca como modificaciones de registros existentes.
+
+**Consecuencias:**
+
+- *Se gana:* Cumplimiento estructural de la Resolución 2654 (inmutabilidad por diseño, auditoría garantizada arquitecturalmente); aislamiento completo del schema clínico; el log de auditoría no puede ser omitido — es una propiedad del código, no una convención.
+- *Se sacrifica:* Consultas del estado actual de la HCE son más complejas y potencialmente más lentas; el volumen de almacenamiento crece más rápidamente que con un modelo mutable; implementar correcciones requiere lógica explícita de versioning de registros.
+- *Deuda técnica asumida:* La retención de 15 años exigida por la Resolución 2654, combinada con el modelo append-only, genera crecimiento de volumen que debe gestionarse con particionado histórico por año. En fase 1 se acepta ese crecimiento; en fase 2 se debe diseñar el archivado de datos históricos (>5 años) a almacenamiento frío en infraestructura colombiana certificada.
+- *ADRs afectados:* ADR-004 (el schema HCE con datos sensibles cifrados en reposo es el argumento más concreto para que resida exclusivamente en infraestructura colombiana — ambas decisiones se refuerzan mutuamente); ADR-001 (la arquitectura hexagonal del módulo HCE, que es consecuencia del monolito modular con fronteras de dominio, es lo que habilita el puerto de auditoría obligatorio).
+- *Drivers respondidos:* DF5 (auditoría, inmutabilidad y portabilidad según Resolución 2654), DR1 (soberanía y protección del dato clínico bajo Ley 1581).
+- *Atributos de calidad respondidos:* AQ3 (seguridad: schema aislado, cifrado en reposo, auditoría estructuralmente garantizada), AQ1 (disponibilidad: schema dedicado sin contención de recursos con otros módulos).
+
+---
+
+### ADR-004: Infraestructura híbrida con datos clínicos en Colombia y cómputo en nube general
+
+**Estado:** Aceptado
+
+**Contexto:**
+La Ley 1581 de 2012 y la Resolución 2654 de 2019, junto con la condición explícita de la Secretaría de Salud del Eje Cafetero, establecen que los datos clínicos de los pacientes deben permanecer en servidores ubicados en territorio colombiano (DR1). Al mismo tiempo, el sistema necesita escalado elástico para absorber el 40% de la demanda semanal de agendamiento concentrado en dos horas (DF2, DR3). Los servidores on-premise de los hospitales tienen capacidad limitada e inconsistente entre regiones, y el presupuesto no permite adquirir hardware permanente dimensionado para el pico. El backup con retención de 15 años exigido por la Resolución 2654 tampoco es manejable en servidores locales sin equipos de infraestructura dedicados. La pregunta es cómo articular soberanía del dato con elasticidad de cómputo sin exceder el presupuesto.
+
+**Opciones consideradas:**
+
+*Opción A — Infraestructura 100% on-premise en los hospitales del Eje Cafetero*
+
+- **Pros:** Control total del dato; sin dependencia de proveedores cloud; soberanía máxima; costos predecibles a largo plazo.
+- **Contras para este contexto:** Los servidores de los hospitales no pueden absorber el pico del lunes sin sobredimensionamiento permanente de hardware que el presupuesto no cubre. La alta disponibilidad de la HCE con failover automático entre datacenters (AQ1) requiere redundancia de hardware que ningún hospital tiene actualmente. El backup con retención de 15 años en servidores locales es un riesgo operacional serio — los hospitales no tienen equipos de infraestructura dedicados para gestionar esos volúmenes.
+
+*Opción B — Infraestructura 100% en nube pública internacional (AWS us-east-1, Azure West Europe)*
+
+- **Pros:** Máxima elasticidad; alta disponibilidad gestionada por el proveedor; recuperación ante desastres incorporada; costo operacional por demanda.
+- **Contras para este contexto:** Los datos clínicos de pacientes colombianos en servidores fuera de Colombia violan explícitamente la Ley 1581 y la condición de la licitación (DR1). Esta opción queda descartada por el marco legal antes de cualquier evaluación técnica, independientemente de sus ventajas de costo o disponibilidad.
+
+*Opción C — Infraestructura híbrida: datos clínicos en Colombia, cómputo en nube general (elegida)*
+
+- **Pros:** Los schemas de datos clínicos (HCE, Laboratorio con datos de pacientes, Facturación) residen en proveedores con región certificada en Colombia (AWS Colombia Region, ETB Cloud, Claro Cloud) o en servidores on-premise controlados por el operador. El cómputo elástico (réplicas del monolito, caché de lectura en Agendamiento, observabilidad no sensible) opera en nube general — los datos no residen ahí, solo se procesan en memoria y viajan cifrados. El presupuesto se optimiza: se paga por cómputo solo cuando se necesita, sin hardware permanente sobredimensionado para el pico del lunes.
+- **Contras para este contexto:** La separación entre almacenamiento (Colombia) y cómputo (nube general) añade latencia en accesos de lectura intensiva. Exige cifrado obligatorio en tránsito (TLS 1.3 mínimo) para que los datos clínicos no viajen en claro. La gestión de dos capas de infraestructura añade complejidad operacional.
+
+**Decisión:** Se adopta arquitectura híbrida. Los datos clínicos en reposo (schemas de HCE, registros de pacientes en Laboratorio y Facturación) residen exclusivamente en infraestructura colombiana certificada. El cómputo (réplicas del monolito, caché Redis de Agendamiento, observabilidad no sensible) opera en nube general con TLS 1.3 obligatorio en tránsito y sin persistencia de datos clínicos fuera de Colombia.
+
+**Consecuencias:**
+
+- *Se gana:* Cumplimiento pleno de DR1 (soberanía del dato); elasticidad de cómputo para el pico del lunes (AQ2) sin sobredimensionamiento de hardware permanente; presupuesto optimizado al pagar por cómputo solo cuando se usa.
+- *Se sacrifica:* Latencia adicional entre el nodo de cómputo y la base de datos colombiana en operaciones de lectura intensiva; complejidad operacional de gestionar dos capas de infraestructura; la demostración de cumplimiento de residencia del dato requiere auditorías periódicas.
+- *Deuda técnica asumida:* En fase 2 se debe implementar data residency monitoring y clasificación formal de datos por categoría de sensibilidad, para que cualquier cambio en la arquitectura de cómputo no exponga accidentalmente datos clínicos fuera de Colombia. En fase 1, la verificación de residencia del dato es manual.
+- *ADRs afectados:* ADR-003 (el schema HCE cifrado en reposo es la entidad concreta que ADR-004 obliga a colocar en infraestructura colombiana — ambas decisiones se refuerzan mutuamente); ADR-001 (el monolito único simplifica la arquitectura híbrida — hay un solo artefacto de cómputo para replicar, no múltiples servicios con configuraciones de red independientes).
+- *Drivers respondidos:* DR1 (soberanía del dato), DF2 (escalado elástico para el pico de agendamiento), DR3 (optimización del presupuesto disponible).
+- *Atributos de calidad respondidos:* AQ3 (seguridad: datos clínicos en territorio colombiano, TLS 1.3 en tránsito obligatorio), AQ2 (rendimiento: cómputo elástico para el pico del lunes sin hardware sobredimensionado).
+
+---
+
+### ADR-005: Bus de eventos interno como mecanismo de comunicación entre módulos
+
+**Estado:** Aceptado
+
+**Contexto:**
+Los cinco módulos del Monolito Modular tienen dependencias funcionales entre sí: cuando Laboratorio carga un resultado, HCE/Notificaciones debe alertar al médico tratante (DF3); cuando Agendamiento confirma una cita, HCE puede pre-cargar el contexto del paciente; cuando HCE registra una atención, Facturación debe iniciar la generación de la cuenta médica. Esta comunicación no puede materializarse como acoplamiento directo — si el módulo de Notificaciones está caído, el proceso de carga del resultado en Laboratorio no debe fallar. Además, ADR-001 establece que el módulo de Agendamiento es el candidato para extracción a microservicio en fase 2: el mecanismo de comunicación debe estar diseñado desde ahora para soportar esa extracción sin reescribir los módulos productores ni consumidores.
+
+**Opciones consideradas:**
+
+*Opción A — Llamadas REST síncronas directas entre módulos*
+
+- **Pros:** Simplicidad de implementación y depuración; el módulo productor sabe inmediatamente si el consumidor procesó el mensaje; trazabilidad directa del flujo sin infraestructura adicional.
+- **Contras para este contexto:** Acoplamiento temporal estricto: si el módulo de Notificaciones está caído cuando Laboratorio carga un resultado, el resultado falla también — un módulo no crítico tumba un flujo crítico. Las cadenas de llamadas síncronas acumulan la latencia total del flujo completo. En la extracción de Agendamiento a microservicio en fase 2, cada llamada REST directa es un contrato de acoplamiento explícito que debe romperse, encareciendo la migración.
+
+*Opción B — Base de datos compartida como canal de comunicación (tabla de mensajes/outbox compartido)*
+
+- **Pros:** Sin infraestructura adicional; garantías ACID entre escritura y disponibilidad del mensaje; los mensajes persisten en BD aunque el proceso muera.
+- **Contras para este contexto:** Una tabla de mensajes compartida entre módulos introduce acoplamiento físico — exactamente lo que el monolito modular busca evitar con schemas separados por módulo. El polling introduce latencia variable e impredecible en la entrega de eventos. En el pico del lunes, el volumen de eventos de agendamiento compite con las operaciones de todos los módulos en la misma base de datos.
+
+*Opción C — Bus de eventos interno con interfaz abstracta y adaptador externo futuro (elegida)*
+
+- **Pros:** Desacoplamiento temporal entre productores y consumidores — el módulo de Laboratorio no sabe ni le importa quién consume `ResultadoDisponible`; los módulos productores no fallan si un consumidor está caído; la interfaz del bus (nombres de eventos, payloads, mecanismo de suscripción) puede mantenerse estable mientras su implementación evoluciona de in-process en fase 1 a broker externo (Kafka, RabbitMQ) en fase 2 — solo cambia el adaptador, no el código de los módulos.
+- **Contras para este contexto:** Se introduce eventual consistency entre la emisión del evento y su procesamiento; la depuración de flujos asincrónicos es más compleja que REST síncrono. En la implementación in-process del MVP, si el proceso del monolito muere entre la emisión y el procesamiento del evento, el evento puede perderse si no se implementa el outbox pattern.
+
+**Decisión:** Se adopta bus de eventos interno con interfaz abstracta. En fase 1 (MVP), la implementación es in-process — sistema de observers en memoria o librería ligera sin broker separado. Los nombres de eventos, estructura de payloads y mecanismo de suscripción están diseñados para ser compatibles con un broker externo desde el inicio.
+
+Los eventos principales del bus son:
+
+- `ResultadoDisponible(pacienteId, medicoId, resultado, laboratorioId)` — Laboratorio → HCE/Notificaciones
+- `CitaConfirmada(pacienteId, medicoId, fecha, hospitalId)` — Agendamiento → HCE
+- `AtencionRegistrada(pacienteId, codigosProcedimiento, hospitalId)` — HCE → Facturación
+- `StockMinimo(hospitalId, medicamentoId, cantidadActual)` — Farmacia → Notificaciones
+
+**Consecuencias:**
+
+- *Se gana:* Desacoplamiento entre módulos — un consumidor caído no afecta al productor ni a los demás consumidores del mismo evento; ruta de migración clara a broker externo en fase 2 sin reescribir módulos; los eventos son el contrato explícito y versionado entre dominios.
+- *Se sacrifica:* Eventual consistency en flujos inter-módulo; depuración de flujos asincrónicos más compleja que REST síncrono; el delay en la notificación al médico, aunque sea de milisegundos, es real y observable.
+- *Deuda técnica asumida:* El outbox pattern para eventos críticos — especialmente `AtencionRegistrada` → Facturación, cuya pérdida generaría atenciones sin cuenta médica — debe implementarse desde el MVP para garantizar at-least-once delivery. Si no se implementa en fase 1, la migración a broker externo en fase 2 puede revelar pérdidas de eventos que hasta ahora estaban ocultas en la implementación in-process.
+- *ADRs afectados:* ADR-001 (el bus de eventos es la pieza que hace posible que el monolito modular tenga módulos desacoplados funcionalmente y que el Strangler Fig de fase 2 sea viable sin reescritura de los módulos); ADR-002 (los adaptadores HIS emiten eventos al bus cuando sincronizan datos, lo que define parte del contrato de eventos desde el inicio).
+- *Drivers respondidos:* DF3 (notificación inmediata de resultados de laboratorio: el bus emite `ResultadoDisponible` que el módulo de Notificaciones consume sin que Laboratorio conozca el canal de notificación), DF4 (los adaptadores de sistemas heterogéneos emiten eventos normalizados al bus sin acoplar los sistemas externos entre sí).
+- *Atributos de calidad respondidos:* AQ4 (interoperabilidad: los eventos del bus son el contrato versionado entre módulos, estable ante cambios internos de cada módulo), AQ1 (disponibilidad: un módulo consumidor caído no afecta la disponibilidad del módulo productor ni de los demás consumidores del mismo evento).
 
 ---
 
@@ -412,4 +604,123 @@ Esta separación garantiza que cambiar el modelo interno de un módulo (por ejem
 
 ## E. Diagrama de Arquitectura de Alto Nivel
 
-> *[En desarrollo — Paso 5]*
+El diagrama muestra el sistema completo en dos capas de infraestructura: todo lo que reside dentro del recuadro de infraestructura colombiana (datos clínicos en reposo, bases de datos, adaptadores HIS) y lo que opera en nube general (cómputo elástico sin persistencia de datos clínicos). Los nueve actores externos, los cinco módulos internos con sus modelos respectivos, el bus de eventos, las bases de datos separadas por schema y los conectores externos reflejan directamente las decisiones de ADR-001 a ADR-005.
+
+```mermaid
+graph TB
+    subgraph ACTORES["Actores Externos"]
+        PAC(["Pacientes"])
+        MED(["Médicos"])
+        ENF(["Enfermeras"])
+        LABT(["Laboratoristas"])
+        FARM(["Farmacéuticos"])
+        ADM(["Admins. Hospitalarios"])
+        EPS_ACT(["EPS — Sura / Coosalud / Nueva EPS"])
+        MINS_ACT(["MINSALUD"])
+        LABE_ACT(["Labs. Clínicos Externos"])
+    end
+
+    subgraph COLOMBIA["Infraestructura Colombiana — On-Premise / Nube Colombia — Datos Clínicos en Reposo (ADR-004 + DR1)"]
+
+        subgraph ENTRADA["Punto de Entrada Único"]
+            API_GW["API Gateway\nRate Limiting · TLS 1.3 · Enrutamiento"]
+            AUTH["Auth Service\nIAM · RBAC · MFA · JWT"]
+        end
+
+        subgraph MONOLITO["Monolito Modular — SaludEje (ADR-001)"]
+            HCE_M["HCE\nArquitectura Hexagonal\nPort Auditoría obligatorio (ADR-003)"]
+            AGE_M["Agendamiento\nCQRS — Write Model / Read Model"]
+            LAB_M["Laboratorio\nACL + Adaptadores por Lab"]
+            FAR_M["Farmacia\nLayered Architecture"]
+            FAC_M["Facturación\nACL + Adaptadores por EPS"]
+            BUS{{"Bus de Eventos Interno (ADR-005)\nResultadoDisponible · CitaConfirmada\nAtencionRegistrada · StockMinimo"}}
+        end
+
+        subgraph SCHEMAS["Bases de Datos — Schema por Módulo (ADR-003)"]
+            DB_HCE[("DB HCE — Append-only · AES-256 · Ret. 15 años")]
+            DB_AGE[("DB Agendamiento + Read Replica Redis")]
+            DB_LAB[("DB Laboratorio")]
+            DB_FAR[("DB Farmacia — Inventario por Hospital")]
+            DB_FAC[("DB Facturación — RIPS")]
+        end
+
+        subgraph HIS_CAPA["Capa de Integración HIS — Adaptadores por Región (ADR-002)"]
+            A_CAL["Adaptador HIS Caldas\nIAdaptadorHIS"]
+            A_RIS["Adaptador HIS Risaralda\nIAdaptadorHIS"]
+            A_QUI["Adaptador HIS Quindío\nIAdaptadorHIS"]
+        end
+    end
+
+    subgraph NUBE_GEN["Nube General — Cómputo Elástico sin Datos Clínicos en Reposo (ADR-004)"]
+        SCALE["Auto-scaling\nRéplicas Monolito — CPU > 70%"]
+        OBS["Observabilidad\nLogs · Métricas · Alertas"]
+    end
+
+    subgraph HIS_EXIST["HIS Existentes — No Reemplazados (DR2)"]
+        H_CAL[/"HIS Hospital Caldas"/]
+        H_RIS[/"HIS Hospital Risaralda"/]
+        H_QUI[/"HIS Hospital Quindío"/]
+    end
+
+    subgraph CONECT["Conectores Externos"]
+        EPS_SS[/"API EPS Sura"/]
+        EPS_CS[/"API EPS Coosalud"/]
+        EPS_NS[/"API Nueva EPS"/]
+        MINS_S[/"Portal MINSALUD — RIPS"/]
+        LAB_ES[/"Sistemas Labs Externos\nHL7 · CSV · SFTP · APIs propias"/]
+    end
+
+    PAC -->|HTTPS| API_GW
+    MED -->|HTTPS| API_GW
+    ENF -->|HTTPS| API_GW
+    LABT -->|HTTPS| API_GW
+    FARM -->|HTTPS| API_GW
+    ADM -->|HTTPS| API_GW
+    EPS_ACT -->|HTTPS| API_GW
+    MINS_ACT -->|HTTPS| API_GW
+    LABE_ACT -->|"push resultados"| LAB_M
+
+    API_GW --> AUTH
+    AUTH -->|"token válido"| HCE_M
+    AUTH -->|"token válido"| AGE_M
+    AUTH -->|"token válido"| LAB_M
+    AUTH -->|"token válido"| FAR_M
+    AUTH -->|"token válido"| FAC_M
+
+    HCE_M <-->|eventos| BUS
+    AGE_M <-->|eventos| BUS
+    LAB_M <-->|eventos| BUS
+    FAR_M <-->|eventos| BUS
+    FAC_M <-->|eventos| BUS
+
+    HCE_M -->|"INSERT only"| DB_HCE
+    AGE_M --> DB_AGE
+    LAB_M --> DB_LAB
+    FAR_M --> DB_FAR
+    FAC_M --> DB_FAC
+
+    H_CAL --> A_CAL
+    H_RIS --> A_RIS
+    H_QUI --> A_QUI
+    A_CAL -->|"modelo interno"| HCE_M
+    A_RIS -->|"modelo interno"| HCE_M
+    A_QUI -->|"modelo interno"| HCE_M
+
+    FAC_M --> EPS_SS
+    FAC_M --> EPS_CS
+    FAC_M --> EPS_NS
+    FAC_M -->|RIPS| MINS_S
+    LAB_ES -->|"resultados via ACL"| LAB_M
+
+    AGE_M -.->|"escalado horizontal"| SCALE
+    HCE_M -.->|"telemetría"| OBS
+```
+
+**Leyenda de la separación de infraestructura:** El recuadro de infraestructura colombiana contiene todo lo que persiste datos clínicos en reposo — las cinco bases de datos, la capa de integración HIS y el monolito en su instancia primaria. El recuadro de nube general contiene solo cómputo: las réplicas del monolito que escalan durante el pico del lunes y los servicios de observabilidad. Los datos clínicos nunca residen en la nube general — viajan hacia las réplicas de cómputo cifrados con TLS 1.3 y no se persisten fuera de la infraestructura colombiana (ADR-004, DR1).
+
+**Coherencia con los ADRs:**
+- El único artefacto de deployment visible es el Monolito Modular — consistente con ADR-001.
+- Cada módulo tiene su propia base de datos (schema-per-module) — consistente con ADR-003.
+- Los tres adaptadores HIS son independientes entre sí — consistente con ADR-002 (falla aislada por región).
+- El Bus de Eventos Interno es el único canal de comunicación entre módulos — consistente con ADR-005.
+- Las bases de datos clínicas están dentro del recuadro colombiano; el auto-scaling está fuera — consistente con ADR-004.
