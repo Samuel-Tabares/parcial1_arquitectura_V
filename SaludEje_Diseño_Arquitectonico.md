@@ -150,7 +150,107 @@ Se clasifican en dos categorías: **funcionales** (casos de uso con alto impacto
 
 ## B. Atributos de Calidad con Escenarios
 
-> *[En desarrollo — Paso 3]*
+Los atributos de calidad describen *cómo* debe comportarse el sistema, no *qué* debe hacer. Para SaludEje se identificaron cuatro atributos críticos, cada uno justificado en el contexto específico del sistema y desarrollado con un escenario formal de seis componentes. Al final de la sección se explicitan los trade-offs entre atributos — porque optimizar uno siempre tiene un costo en otro.
+
+---
+
+### AQ1 — Disponibilidad
+
+**Por qué es crítico para SaludEje:** La indisponibilidad de la HCE durante una urgencia médica puede derivar en una decisión clínica incorrecta. Un médico de urgencias que no puede acceder al historial de alergias de un paciente inconsciente puede administrar un medicamento que lo mate. A diferencia de la mayoría de los sistemas de software, donde la indisponibilidad es un inconveniente económico, en SaludEje la indisponibilidad de la HCE es un riesgo de vida. El módulo de Agendamiento tiene un perfil distinto: su indisponibilidad en el pico del lunes impacta directamente el acceso a la atención, pero el riesgo es operacional, no clínico.
+
+**Escenario de calidad — Falla del nodo primario en horario nocturno:**
+
+| Componente | Descripción |
+|---|---|
+| **Fuente del estímulo** | Falla de hardware en el servidor primario de la HCE |
+| **Estímulo** | El nodo primario deja de responder a las 2:17am durante una atención de urgencias activa |
+| **Artefacto** | Módulo de Historia Clínica Electrónica |
+| **Entorno** | Operación normal, carga baja (horario nocturno), al menos un médico con una sesión activa consultando la HCE de un paciente en urgencias |
+| **Respuesta** | El sistema detecta la falla, conmuta automáticamente al nodo réplica activo (hot standby), y mantiene la sesión del médico sin interrupción visible |
+| **Medida de respuesta** | Tiempo de conmutación automática < 30 segundos; cero pérdida de datos; el médico no recibe un error — como máximo una pantalla de carga de 5-10 segundos; disponibilidad mensual de la HCE ≥ 99.9% (máximo 44 minutos de downtime al mes) |
+
+**Táctica aplicada:** Redundancia activa (hot standby) con health checks continuos y failover automático. La réplica está en un datacenter colombiano distinto al primario para que una falla de datacenter no tumbe ambos nodos.
+
+---
+
+### AQ2 — Rendimiento bajo carga pico
+
+**Por qué es crítico para SaludEje:** El lunes entre 6am y 8am concentra el 40% de las agendas de toda la semana. En ese intervalo, el sistema recibe en dos horas el equivalente a dos días y medio de carga normal. La operación dominante en ese pico no es el agendamiento en sí — es la *consulta de disponibilidad*: pacientes revisando qué citas hay libres antes de agendar. Si el sistema responde lento o falla en ese horario, los pacientes no pueden agendar sus citas, el cuello de botella se traslada a los hospitales físicamente, y el impacto en la atención es inmediato.
+
+**Escenario de calidad — Pico de demanda en agendamiento:**
+
+| Componente | Descripción |
+|---|---|
+| **Fuente del estímulo** | Pacientes y personal administrativo de los hospitales del Eje Cafetero |
+| **Estímulo** | 1.200 solicitudes concurrentes de consulta de disponibilidad (estimado para el pico del lunes), de las cuales aproximadamente el 15% derivarán en un agendamiento efectivo |
+| **Artefacto** | Módulo de Agendamiento — modelo de lectura (CQRS) |
+| **Entorno** | Horario de máxima demanda: lunes 6:00am – 8:00am; el auto-scaling ya fue pre-activado a las 5:45am basado en el patrón histórico |
+| **Respuesta** | El sistema responde a todas las consultas de disponibilidad con datos correctos; el auto-scaling agrega réplicas en menos de 60 segundos si el umbral de CPU supera el 70%; los agendamientos efectivos se procesan en orden y sin pérdida de datos |
+| **Medida de respuesta** | Tiempo de respuesta p95 para consultas de disponibilidad < 2 segundos; tasa de error < 0.1%; el auto-scaling debe activar nuevas réplicas en ≤ 60 segundos; el sistema vuelve a la configuración base en ≤ 20 minutos después del pico |
+
+**Táctica aplicada:** CQRS con modelo de lectura en caché (Redis o réplica de lectura de BD). Las consultas de disponibilidad nunca tocan el modelo de escritura. Auto-scaling horizontal del monolito basado en métricas de CPU/memoria. Pre-warming de réplicas antes del pico del lunes (activación programada a las 5:45am).
+
+---
+
+### AQ3 — Seguridad
+
+**Por qué es crítico para SaludEje:** La Historia Clínica Electrónica contiene datos sensibles de salud — el tipo de dato más protegido por la Ley 1581. Un acceso no autorizado a la HCE de un paciente no es solo una violación de privacidad: puede exponer condiciones de salud que el paciente no ha revelado, diagnósticos psiquiátricos, enfermedades de transmisión sexual, o estados de salud con implicaciones laborales o de seguros. Además, el sistema tiene múltiples actores con niveles de acceso radicalmente distintos: un paciente solo puede ver su propia historia, un médico solo puede ver las historias de sus pacientes asignados, un administrador hospitalario tiene acceso a datos administrativos pero no clínicos. La granularidad del control de acceso no es un detalle de implementación — es un requerimiento normativo.
+
+**Escenario de calidad — Ataque de credential stuffing contra cuentas médicas:**
+
+| Componente | Descripción |
+|---|---|
+| **Fuente del estímulo** | Atacante externo con una lista de credenciales filtradas de otra plataforma |
+| **Estímulo** | 500 intentos de login fallidos contra diferentes cuentas de médicos en un período de 5 minutos, desde múltiples IPs distribuidas en una red de bots |
+| **Artefacto** | Auth Service (IAM centralizado) y módulo de HCE |
+| **Entorno** | Operación normal; el ataque ocurre en horario no pico (3am) para evitar detección por volumen |
+| **Respuesta** | El sistema detecta el patrón anómalo de intentos fallidos distribuidos, activa el bloqueo temporal de las cuentas afectadas después de 10 intentos fallidos, bloquea las IPs del rango de bots, genera una alerta de seguridad al administrador, y registra el evento completo en el log de auditoría inmutable |
+| **Medida de respuesta** | Detección del patrón en ≤ 60 segundos desde el inicio del ataque; bloqueo de cuenta activado en el intento número 10; cero datos clínicos expuestos; alerta enviada al administrador en ≤ 2 minutos; el log de auditoría registra cada intento fallido con IP, timestamp y cuenta objetivo |
+
+**Tácticas aplicadas:** Rate limiting por cuenta y por IP en el Auth Service. Bloqueo progresivo de cuentas (5 intentos → warning, 10 intentos → bloqueo temporal). MFA obligatorio para roles clínicos (médicos, enfermeras). RBAC (Role-Based Access Control) granular por rol y por hospital. Log de auditoría inmutable en la HCE (append-only, no editable ni siquiera por administradores del sistema).
+
+---
+
+### AQ4 — Interoperabilidad
+
+**Por qué es crítico para SaludEje:** La razón de existir de SaludEje es integrar sistemas heterogéneos que hoy no se hablan entre sí. Si el sistema no puede incorporar un nuevo laboratorio externo sin una reescritura del core, o si agregar una cuarta EPS requiere modificar la lógica de facturación, el sistema falla en su misión fundamental. La interoperabilidad no es solo conectividad técnica — es la capacidad de incorporar nuevos actores externos sin degradar lo que ya funciona.
+
+**Escenario de calidad — Incorporación de un laboratorio externo no contemplado en el diseño inicial:**
+
+| Componente | Descripción |
+|---|---|
+| **Fuente del estímulo** | La Secretaría de Salud contrata un nuevo laboratorio clínico regional (Laboratorio del Sur) que no estaba en el alcance inicial del MVP |
+| **Estímulo** | Laboratorio del Sur necesita cargar resultados en su formato propietario (XML con esquema propio, sin HL7), mediante SFTP en lugar de API REST |
+| **Artefacto** | Módulo de Laboratorio — capa ACL y registro de adaptadores |
+| **Entorno** | Sistema en producción con otros laboratorios ya integrados y en operación; el nuevo adaptador no puede afectar las integraciones existentes |
+| **Respuesta** | Se desarrolla e integra un nuevo adaptador para Laboratorio del Sur que traduce su formato XML propietario y su protocolo SFTP al modelo interno de SaludEje. El adaptador se registra en el sistema sin modificar el módulo de Laboratorio ni ningún otro módulo. Los laboratorios ya integrados continúan operando sin interrupción |
+| **Medida de respuesta** | El nuevo adaptador puede desarrollarse e integrarse en ≤ 5 días hábiles; cero cambios al core del módulo de Laboratorio; cero regresiones en laboratorios ya integrados verificadas por suite de tests del adaptador; el resultado procesado por el nuevo adaptador es indistinguible del procesado por cualquier otro laboratorio desde la perspectiva del módulo HCE |
+
+**Táctica aplicada:** Anti-Corruption Layer con registro de adaptadores pluggable. Cada adaptador implementa una interfaz común (`IAdaptadorLaboratorio`) que el módulo de Laboratorio consume sin conocer la implementación concreta. Los contratos de eventos entre módulos están versionados, lo que permite que nuevos adaptadores adopten la interfaz sin romper los existentes.
+
+---
+
+### Trade-offs entre atributos de calidad
+
+Los cuatro atributos no son independientes. Optimizar uno tiene consecuencias medibles en los demás. A continuación se identifican los tres trade-offs más significativos del diseño y cómo se manejan.
+
+#### Trade-off 1: Disponibilidad alta vs Consistencia estricta
+
+**La tensión:** El teorema CAP establece que en un sistema distribuido con partición de red, no se puede garantizar simultáneamente consistencia perfecta y disponibilidad total. Para lograr alta disponibilidad en la HCE (réplica activa, failover automático), hay que aceptar una ventana brevísima de inconsistencia durante la conmutación entre nodos.
+
+**Cómo se maneja:** Se aplica una estrategia diferenciada por dominio. En la HCE, las *escrituras* priorizan consistencia: una entrada clínica no se confirma hasta que está replicada en ambos nodos (sincronización síncrona). Las *lecturas* en el módulo de Agendamiento priorizan disponibilidad: el modelo de lectura de CQRS acepta eventual consistency (el médico puede ver por milisegundos un slot que acaba de ser tomado). Esta diferenciación evita aplicar el mismo nivel de consistencia a todos los dominios, que hubiera requerido sacrificar disponibilidad global o rendimiento global innecesariamente.
+
+#### Trade-off 2: Seguridad fuerte vs Rendimiento
+
+**La tensión:** Cada capa de seguridad añade latencia. El cifrado en reposo y en tránsito de los datos clínicos tiene un costo de CPU. La validación de tokens JWT en cada request al Auth Service agrega un round-trip. El MFA obligatorio para médicos añade fricción en el login. El log de auditoría append-only es una escritura adicional en cada acceso a la HCE.
+
+**Cómo se maneja:** Se acepta el costo de seguridad en HCE sin compromisos: el cifrado, el MFA y el log de auditoría son no negociables dado el perfil normativo y el riesgo clínico. En módulos con menor criticidad (Farmacia, gestión administrativa), el nivel de seguridad es alto pero sin MFA obligatorio, lo que reduce la fricción para usuarios que acceden con mayor frecuencia. La validación de tokens se optimiza con caché de tokens válidos en el API Gateway (evita el round-trip al Auth Service en cada request durante la sesión activa).
+
+#### Trade-off 3: Interoperabilidad amplia vs Superficie de ataque
+
+**La tensión:** Cada punto de integración con un sistema externo (un laboratorio, una EPS, un HIS) es un potencial vector de ataque. Un laboratorio externo comprometido podría intentar inyectar datos maliciosos en la HCE a través del adaptador. Cuantos más adaptadores, mayor la superficie de ataque.
+
+**Cómo se maneja:** El ACL no es solo un traductor de formatos — es también la primera línea de validación y sanitización. Cada adaptador debe validar y sanitizar todos los datos externos *antes* de que entren al modelo interno de SaludEje. Los datos que no pasen la validación son rechazados y registrados en el log de seguridad. El módulo de Laboratorio, como receptor de datos de fuentes externas, tiene validación de esquema estricta en la frontera del ACL: ningún dato malformado o fuera del esquema esperado puede propagarse al resto del sistema.
 
 ---
 

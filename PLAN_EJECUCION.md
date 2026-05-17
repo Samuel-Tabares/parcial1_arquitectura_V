@@ -76,10 +76,10 @@ Diseño arquitectónico completo de **SaludEje**, plataforma digital para integr
 > - **Respuesta** — cómo debe reaccionar el sistema
 > - **Medida de respuesta** — cómo se sabe que la respuesta fue suficiente (número, tiempo, porcentaje)
 
-- [ ] **Disponibilidad** — HCE indisponible = riesgo de vida. Escenario: urgencia nocturna sin acceso a historial
-- [ ] **Escalabilidad** — picos de agendamiento. Escenario: lunes 6am, 1000 usuarios simultáneos
-- [ ] **Seguridad** — datos clínicos sensibles, normativa colombiana. Escenario: acceso no autorizado a HCE
-- [ ] **Interoperabilidad** — 3 departamentos, múltiples HIS, múltiples EPS. Escenario: integración laboratorio externo
+- [x] **Disponibilidad** — HCE indisponible = riesgo de vida. Escenario: urgencia nocturna sin acceso a historial
+- [x] **Rendimiento bajo carga pico** — picos de agendamiento. Escenario: lunes 6am, 1200 solicitudes concurrentes
+- [x] **Seguridad** — datos clínicos sensibles, normativa colombiana. Escenario: credential stuffing contra cuentas médicas
+- [x] **Interoperabilidad** — múltiples HIS, múltiples EPS, múltiples labs. Escenario: nuevo laboratorio externo no contemplado
 
 **Trade-offs a explicar:**
 - Disponibilidad alta vs Consistencia estricta (CAP theorem en HCE distribuida)
