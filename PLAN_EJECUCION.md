@@ -31,9 +31,9 @@ Diseño arquitectónico completo de **SaludEje**, plataforma digital para integr
 >
 > **Cómo hacerlo:** Listar las opciones reales con sus pros y contras en el contexto específico de SaludEje (no en general). Luego elegir y justificar con base en los drivers del sistema. La justificación debe responder: *¿por qué esta opción y no las otras dado este contexto?*
 
-- [ ] Evaluar: **Monolito modular** vs **Microservicios** vs **Arquitectura por capas** vs **Event-driven**
-- [ ] Sustentar por qué cada dominio puede/necesita un modelo distinto (HCE ≠ Agendamiento ≠ Laboratorio)
-- [ ] Definir cómo se articulan los modelos entre sí y dónde están los límites
+- [x] Evaluar: **Monolito modular** vs **Microservicios** vs **Arquitectura por capas** vs **Event-driven**
+- [x] Sustentar por qué cada dominio puede/necesita un modelo distinto (HCE ≠ Agendamiento ≠ Laboratorio)
+- [x] Definir cómo se articulan los modelos entre sí y dónde están los límites
 
 **Decisión tentativa a sustentar:** Arquitectura de microservicios por dominio (domain-driven), con un bus de eventos para comunicación asíncrona entre dominios. HCE con arquitectura hexagonal para garantizar aislamiento de la lógica clínica. Justificación: equipos independientes por dominio, evolución sin acoplamiento, escalado diferenciado por carga.
 
