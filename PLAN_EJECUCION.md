@@ -48,15 +48,17 @@ Diseño arquitectónico completo de **SaludEje**, plataforma digital para integr
 > **Cómo hacerlos:** Para cada driver funcional preguntarse: *¿si esto cambia, cambia la arquitectura?* Si la respuesta es sí, es un driver. Para restricciones: *¿qué no podemos hacer aunque quisiéramos?* Soberanía del dato, presupuesto, equipo sin experiencia — esas son restricciones reales.
 
 **Drivers funcionales (mínimo 4):**
-- [ ] DF1: Acceso a HCE en tiempo real desde cualquier hospital del eje cafetero
-- [ ] DF2: Gestión de picos extremos de agendamiento (lunes 6-8am = 40% semanal)
-- [ ] DF3: Notificación inmediata de resultados de laboratorio al médico tratante
-- [ ] DF4: Integración heterogénea con HIS existentes y EPS con formatos distintos
+- [x] DF1: Acceso a HCE en tiempo real desde cualquier hospital del eje cafetero
+- [x] DF2: Gestión de picos extremos de agendamiento (lunes 6-8am = 40% semanal)
+- [x] DF3: Notificación inmediata de resultados de laboratorio al médico tratante
+- [x] DF4: Integración heterogénea con HIS existentes y EPS con formatos distintos
+- [x] DF5: Auditoría, inmutabilidad y portabilidad de la HCE (Resolución 2654)
 
 **Drivers de restricción (mínimo 3):**
-- [ ] DR1: Soberanía del dato — datos clínicos solo en territorio colombiano (ley 1581 + resolución 2654)
-- [ ] DR2: Presupuesto y equipo limitado — 12 ingenieros sin experiencia en salud, $850M COP
-- [ ] DR3: No reemplazar HIS existentes — integración obligatoria como capa adicional
+- [x] DR1: Soberanía del dato — datos clínicos solo en territorio colombiano (ley 1581 + resolución 2654)
+- [x] DR2: Presupuesto y equipo limitado — 12 ingenieros sin experiencia en salud, $850M COP
+- [x] DR3: No reemplazar HIS existentes — integración obligatoria como capa adicional
+- [x] DR4: Continuidad operacional — rollout sin interrumpir atención médica en curso
 
 ---
 

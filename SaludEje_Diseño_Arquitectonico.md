@@ -32,7 +32,119 @@ El diseño arquitectónico propuesto en este documento parte de un principio: **
 
 ## A. Drivers Arquitectónicos
 
-> *[En desarrollo — Paso 2]*
+Los drivers arquitectónicos son los requerimientos que más impactan las decisiones de diseño. No son una lista de todo lo que debe hacer el sistema — son los requerimientos cuyo cambio obligaría a rediseñar la arquitectura. La prueba para identificar un driver es directa: *si este requerimiento desaparece o cambia sustancialmente, ¿hay que rediseñar la arquitectura?* Si la respuesta es sí, es un driver.
+
+Se clasifican en dos categorías: **funcionales** (casos de uso con alto impacto estructural) y **de restricción** (límites que el diseño no puede ignorar).
+
+---
+
+### Drivers Funcionales
+
+#### DF1 — Acceso cross-hospital a la historia clínica en tiempo real
+
+**Descripción:** Un paciente atendido en cualquier hospital del Eje Cafetero debe tener su historia clínica completa disponible para el médico tratante, independientemente de en qué hospital fue registrada originalmente. El caso que origina SaludEje es precisamente este: un paciente de Armenia que se accidenta en Manizales llega a urgencias sin historial disponible.
+
+**Por qué es un driver:** Este requerimiento define la naturaleza distribuida del sistema. Si solo se necesitara acceso dentro del mismo hospital, cada HIS existente sería suficiente y SaludEje no tendría razón de existir como plataforma de integración. El hecho de que el acceso sea cross-hospital obliga a tener un modelo de datos centralizado para la HCE (o al menos federado con sincronización en tiempo real), una capa de API unificada que abstraiga el origen del dato, y una estrategia de identidad del paciente que funcione entre hospitales (el mismo paciente puede tener IDs distintos en el HIS de Manizales y en el de Armenia). Cualquier cambio en este requerimiento — por ejemplo, si se acepta que la HCE solo esté disponible con 24 horas de retraso — cambiaría radicalmente la estrategia de sincronización y el modelo de consistencia del sistema.
+
+**Decisiones que condiciona:** Modelo centralizado de HCE con adaptadores por HIS local, arquitectura hexagonal en el módulo HCE para abstraer el origen del dato, API Gateway como punto de entrada único, estrategia de identidad federada del paciente.
+
+---
+
+#### DF2 — Gestión de picos extremos de demanda en agendamiento
+
+**Descripción:** El lunes entre 6am y 8am concentra el 40% de las agendas de toda la semana. En ese intervalo de dos horas, el sistema debe manejar una carga equivalente a la de dos días y medio de operación normal. La indisponibilidad en ese horario tiene impacto directo en la atención de pacientes.
+
+**Por qué es un driver:** La distribución de carga no uniforme cambia la estrategia de escalado. Si la carga fuera uniforme durante la semana, un dimensionamiento fijo sería suficiente. El pico extremo y predecible del lunes obliga a una estrategia de escalado elástico que responda rápido y a un diseño del módulo que separe el cuello de botella real (lecturas de disponibilidad) de las escrituras. Si este requerimiento desapareciera — si la Secretaría distribuyera los turnos de agendamiento para evitar el pico — el CQRS en el módulo de Agendamiento y el auto-scaling serían sobrediseño innecesario.
+
+**Decisiones que condiciona:** CQRS en el módulo de Agendamiento (lectura y escritura con modelos independientes), auto-scaling horizontal del monolito, caché de disponibilidad en el modelo de lectura.
+
+---
+
+#### DF3 — Notificación inmediata de resultados de laboratorio al médico tratante
+
+**Descripción:** Cuando un laboratorio externo carga el resultado de un examen clínico, el médico tratante debe ser notificado inmediatamente, sin necesidad de que el médico consulte activamente el sistema. El flujo es: laboratorio carga resultado → sistema detecta el evento → médico recibe la notificación.
+
+**Por qué es un driver:** La palabra "inmediata" y la inversión del flujo (push, no pull) obligan a un modelo de comunicación asíncrono basado en eventos. Si el requerimiento fuera "el médico puede consultar los resultados cuando lo desee", bastaría con un endpoint REST que el médico llama manualmente. La notificación push implica que el sistema debe saber quién es el médico tratante del paciente, debe tener un canal de notificación activo (websocket, push notification, SMS), y debe procesar el evento del laboratorio en tiempo real. Esto es lo que justifica la existencia del bus de eventos interno y del módulo de Notificaciones.
+
+**Decisiones que condiciona:** Bus de eventos interno con el evento `ResultadoDisponible`, módulo de Notificaciones como consumidor, ACL en el módulo de Laboratorio para normalizar los formatos heterogéneos de los laboratorios externos antes de emitir el evento.
+
+---
+
+#### DF4 — Integración con sistemas heterogéneos externos sin reemplazarlos
+
+**Descripción:** SaludEje debe integrarse con: los HIS existentes de cada hospital (distintos entre sí, con bases de datos propias que no pueden modificarse), las APIs de las EPS (Sura, Coosalud y Nueva EPS tienen formatos y protocolos distintos), y los laboratorios clínicos externos (mezcla de HL7, CSV, APIs propias, y otros formatos). Ninguno de estos sistemas puede ser reemplazado en la primera fase.
+
+**Por qué es un driver:** La heterogeneidad de los sistemas externos define la necesidad del patrón ACL y de los adaptadores. Si todos los sistemas externos hablaran el mismo protocolo (por ejemplo, HL7 FHIR estándar), los adaptadores serían triviales o innecesarios. El hecho de que cada EPS tenga su propia API y que cada hospital tenga su propio HIS obliga a que SaludEje tenga una capa de integración explícita y extensible: agregar un nuevo hospital o una nueva EPS debe ser posible sin modificar la lógica de negocio central. Si este requerimiento cambiara — si se pudiera exigir a todos los actores que adoptaran un estándar común — la arquitectura de integración simplificaría radicalmente.
+
+**Decisiones que condiciona:** Anti-Corruption Layer en los módulos de Facturación y Laboratorio, adaptadores por HIS en la capa de integración, diseño extensible que permita añadir nuevos adaptadores sin modificar el core.
+
+---
+
+#### DF5 — Portabilidad y acceso auditado a la historia clínica (Resolución 2654)
+
+**Descripción:** La Resolución 2654 de 2019 establece que la Historia Clínica Electrónica debe garantizar auditabilidad (cada acceso queda registrado con quién, cuándo y desde dónde), inmutabilidad (los registros clínicos no pueden modificarse ni eliminarse, solo adicionarse) y portabilidad (el paciente puede solicitar su historia en un formato interoperable). Estos no son requerimientos opcionales: son obligaciones legales.
+
+**Por qué es un driver:** Estos tres atributos — auditoría, inmutabilidad y portabilidad — no pueden implementarse como una capa superficial encima de una arquitectura cualquiera. Requieren decisiones estructurales: el log de auditoría debe ser un puerto obligatorio en la arquitectura hexagonal (no una opción que alguien puede omitir), el modelo de datos de la HCE no puede usar operaciones UPDATE sobre registros clínicos (solo INSERT), y debe existir un puerto de exportación en formato estándar. Si la Resolución 2654 no existiera, la arquitectura hexagonal del módulo HCE seguiría siendo una buena práctica, pero ya no sería una necesidad estructural impuesta por la normativa.
+
+**Decisiones que condiciona:** Arquitectura hexagonal con puerto de auditoría obligatorio en HCE, modelo de datos append-only para registros clínicos, puerto de exportación en formato HL7 FHIR o equivalente.
+
+---
+
+### Drivers de Restricción
+
+#### DR1 — Soberanía del dato: datos clínicos solo en territorio colombiano
+
+**Descripción:** La Secretaría de Salud exige que los datos clínicos de los pacientes permanezcan en servidores ubicados en territorio colombiano. Esta restricción está respaldada por la Ley 1581 de 2012 y es una condición no negociable de la licitación.
+
+**Por qué es una restricción arquitectónica:** Esta restricción elimina directamente las opciones de cloud público internacional (AWS us-east-1, Azure West Europe, GCP us-central1) para cualquier dato clínico. Las opciones quedan limitadas a: proveedores cloud con región certificada en Colombia (AWS anunció región en Colombia; también existen proveedores locales como ETB Cloud o Claro Cloud), servidores on-premise en los hospitales o en datacenter colombiano certificado, o una arquitectura híbrida donde los datos clínicos van a infraestructura colombiana y los datos no clínicos (logs de acceso, analytics, configuración) pueden ir a cloud internacional. Esta restricción también impacta la estrategia de backup y recuperación ante desastres: el backup también debe estar en territorio colombiano.
+
+**Decisiones que condiciona:** Infraestructura híbrida (datos clínicos en nube colombiana o on-premise; servicios de cómputo pueden estar en cloud), estrategia de backup en datacenter colombiano, exclusión de opciones de cloud internacional para la BD de HCE.
+
+---
+
+#### DR2 — No reemplazar los HIS existentes en fase 1
+
+**Descripción:** Cada hospital del Eje Cafetero ya tiene su propio Sistema de Información Hospitalario (HIS) con bases de datos propias y flujos operacionales activos. Estos sistemas no pueden ser reemplazados durante la primera fase de 18 meses. SaludEje debe integrarse con ellos como una capa adicional.
+
+**Por qué es una restricción arquitectónica:** Esta restricción descarta la opción de una base de datos centralizada única como punto de partida. Si se pudiera reemplazar los HIS, se podría migrar todos los datos a un modelo unificado y el problema de integración desaparecería. Al no poder reemplazarlos, el sistema debe mantener los HIS como fuentes de verdad para sus datos históricos y construir una capa de sincronización o federación encima. Esto también significa que SaludEje no puede asumir nada sobre el modelo de datos de los HIS existentes — puede cambiar sin previo aviso, puede tener inconsistencias, puede tener formatos no estándar. El adaptador por hospital en la capa de integración es la consecuencia directa de esta restricción.
+
+**Decisiones que condiciona:** Adaptadores por HIS en la capa de integración, diseño de la HCE como capa federada sobre los datos existentes (no como reemplazo), estrategia de sincronización incremental de datos históricos.
+
+---
+
+#### DR3 — Equipo sin experiencia en el dominio de salud y presupuesto limitado
+
+**Descripción:** Los 12 ingenieros contratados no tienen experiencia previa en sistemas de salud ni en la normativa del sector colombiano. El presupuesto total para desarrollo e implementación de la primera fase es de $850 millones de pesos colombianos (~200.000 USD), distribuidos en 18 meses.
+
+**Por qué es una restricción arquitectónica:** Esta restricción pone un techo a la complejidad operacional aceptable. Un diseño técnicamente superior pero que requiera un nivel de expertise que el equipo no tiene al inicio del proyecto es un diseño fallido para este contexto. Fue el argumento definitivo para descartar microservicios en fase 1: el overhead operacional de una arquitectura distribuida madura (service mesh, distributed tracing, sagas) habría consumido la capacidad del equipo en infraestructura en lugar de en dominio. El presupuesto limitado también descarta opciones de licenciamiento costoso (ESB comerciales como MuleSoft, soluciones SaaS de integración de salud) y favorece tecnologías open source mantenibles por el equipo.
+
+**Decisiones que condiciona:** Monolito Modular sobre microservicios, preferencia por tecnologías open source y ecosistemas con amplia documentación, arquitectura diseñada para ser comprensible por un equipo que está aprendiendo el dominio simultáneamente.
+
+---
+
+#### DR4 — Continuidad operacional: el sistema no puede interrumpir la atención en curso
+
+**Descripción:** Los hospitales del Eje Cafetero atienden pacientes las 24 horas. La implantación de SaludEje no puede causar períodos de indisponibilidad que interrumpan la atención médica en curso. Los HIS existentes deben seguir operando durante toda la fase de integración.
+
+**Por qué es una restricción arquitectónica:** Esta restricción descarta las migraciones big-bang (apagar el sistema viejo, encender el nuevo). La integración debe ser incremental: SaludEje se agrega como capa adicional mientras los HIS siguen operando, la sincronización de datos históricos debe hacerse en paralelo sin bloquear los sistemas existentes, y el rollout debe poder revertirse por hospital sin afectar a los demás. Esto refuerza el patrón Strangler Fig para la migración y obliga a que los adaptadores de HIS sean tolerantes a fallos del HIS subyacente (si el HIS de un hospital falla, los otros hospitales no se ven afectados).
+
+**Decisiones que condiciona:** Estrategia de rollout incremental por hospital, adaptadores HIS con manejo de fallos independiente, diseño de la sincronización de datos históricos como proceso background no bloqueante.
+
+---
+
+### Tabla resumen de drivers y su impacto
+
+| Driver | Tipo | Decisión arquitectónica que condiciona |
+|---|---|---|
+| DF1 — Acceso cross-hospital a HCE | Funcional | HCE centralizada, API Gateway, identidad federada del paciente |
+| DF2 — Picos extremos de agendamiento | Funcional | CQRS en Agendamiento, auto-scaling, caché de disponibilidad |
+| DF3 — Notificación inmediata de laboratorio | Funcional | Bus de eventos interno, módulo Notificaciones, ACL en Laboratorio |
+| DF4 — Integración con sistemas heterogéneos | Funcional | ACL en Facturación y Laboratorio, adaptadores por HIS |
+| DF5 — Auditoría, inmutabilidad y portabilidad (Res. 2654) | Funcional | Hexagonal con puerto de auditoría obligatorio, modelo append-only en HCE |
+| DR1 — Soberanía del dato | Restricción | Infraestructura colombiana para datos clínicos, arquitectura híbrida |
+| DR2 — No reemplazar HIS existentes | Restricción | Adaptadores por HIS, integración como capa adicional, rollout incremental |
+| DR3 — Equipo sin experiencia + presupuesto limitado | Restricción | Monolito Modular, tecnologías open source, complejidad operacional mínima |
+| DR4 — Continuidad operacional | Restricción | Rollout incremental por hospital, adaptadores tolerantes a fallos del HIS |
 
 ---
 
